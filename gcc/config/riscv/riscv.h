@@ -3,6 +3,9 @@
    Contributed by Andrew Waterman (andrew@sifive.com).
    Based on MIPS target for GNU compiler.
 
+   PULP family support contributed by Eric Flamand (eflamand@iis.ee.ethz.ch) at ETH-Zurich
+   and Greenwaves Technologies (eric.flamand@greenwaves-technologies.com)
+
 This file is part of GCC.
 
 GCC is free software; you can redistribute it and/or modify
@@ -58,7 +61,34 @@ along with GCC; see the file COPYING3.  If not see
 %{" FPIE_OR_FPIC_SPEC ":-fpic} \
 %{march=*} \
 %{mabi=*} \
+%{mchip=*} \
+%{mcpu=*} \
+%{mL2=*} \
+%{mL1Cl=*} \
+%{mL1Fc=*} \
+%{mPE=*} \
+%{mFC=*} \
 %(subtarget_asm_spec)"
+
+#ifdef OLD
+/* Extra switches sometimes passed to the linker.  */
+#ifndef LINK_SPEC
+#define LINK_SPEC "\
+%{!T:-dT riscv.ld} \
+%{mchip=*:--mchip=%*} \
+%{march=*:--march=%*} \
+%{mL2=*:--mL2=%*} \
+%{mL1Cl=*:--mL1Cl=%*} \
+%{mL1Fc=*:--mL1Fc=%*} \
+%{mPE=*:--mPE=%*} \
+%{mFC=*:--mFC=%*} \
+%{mWci:--mWci} \
+%{mEci:--mEci} \
+%{mComp:--mComp} \
+%{mDIE=*:--mDIE=%*} \
+%{shared}"
+#endif  /* LINK_SPEC defined */
+#endif
 
 #define TARGET_DEFAULT_CMODEL CM_MEDLOW
 
@@ -226,9 +256,11 @@ along with GCC; see the file COPYING3.  If not see
    - 32 floating point registers
    - 2 fake registers:
 	- ARG_POINTER_REGNUM
-	- FRAME_POINTER_REGNUM */
+	- FRAME_POINTER_REGNUM
+   - 6 hw loop registers
+   - 1 faked register for viterbi insn */
 
-#define FIRST_PSEUDO_REGISTER 66
+#define FIRST_PSEUDO_REGISTER (66+6+1)
 
 /* x0, sp, gp, and tp are fixed.  */
 
@@ -240,7 +272,7 @@ along with GCC; see the file COPYING3.  If not see
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,			\
   /* Others.  */							\
-  1, 1									\
+  1, 1, 1, 1, 1, 1, 1, 1, 1 						\
 }
 
 /* a0-a7, t0-t6, fa0-fa7, and ft0-ft11 are volatile across calls.
@@ -254,7 +286,18 @@ along with GCC; see the file COPYING3.  If not see
   1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1,			\
   1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1,			\
   /* Others.  */							\
-  1, 1									\
+  1, 1, 1, 1, 1, 1, 1, 1, 1 						\
+}
+
+#define CALL_REALLY_USED_REGISTERS                                      \
+{ /* General registers.  */                                             \
+  1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1,                       \
+  1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1,                       \
+  /* Floating-point registers.  */                                      \
+  1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1,                       \
+  1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1,                       \
+  /* Others.  */                                                        \
+  1, 1, 1, 1, 1, 1, 1, 1, 1 \
 }
 
 /* Internal macros to classify an ISA register's type.  */
@@ -266,6 +309,9 @@ along with GCC; see the file COPYING3.  If not see
 #define FP_REG_FIRST 32
 #define FP_REG_LAST  63
 #define FP_REG_NUM   (FP_REG_LAST - FP_REG_FIRST + 1)
+#define HWLOOP_REG_FIRST 66
+#define HWLOOP_REG_LAST  (HWLOOP_REG_FIRST + 6)
+#define VIT_REG_FIRST   (HWLOOP_REG_LAST+1)
 
 /* The DWARF 2 CFA column which tracks the return address from a
    signal handler context.  This means that to maintain backwards
@@ -277,6 +323,10 @@ along with GCC; see the file COPYING3.  If not see
   ((unsigned int) ((int) (REGNO) - GP_REG_FIRST) < GP_REG_NUM)
 #define FP_REG_P(REGNO)  \
   ((unsigned int) ((int) (REGNO) - FP_REG_FIRST) < FP_REG_NUM)
+#define HWLOOP_REG_P(REGNO) \
+  ((unsigned int) (((int) REGNO >= HWLOOP_REG_FIRST) && ((int) REGNO < HWLOOP_REG_LAST)))
+#define VIT_REG_P(REGNO) \
+  ((unsigned int) (((int) REGNO == VIT_REG_FIRST)))
 
 #define FP_REG_RTX_P(X) (REG_P (X) && FP_REG_P (REGNO (X)))
 
@@ -352,6 +402,10 @@ enum reg_class
   GR_REGS,			/* integer registers */
   FP_REGS,			/* floating-point registers */
   FRAME_REGS,			/* arg pointer and frame pointer */
+  LC_REGS,                      /* Loop count */
+  LE_REGS,                      /* Loop end */
+  LS_REGS,                      /* Loop start */
+  VIT_REGS,                     /* Viterbi Flags */
   ALL_REGS,			/* all registers */
   LIM_REG_CLASSES		/* max value + 1 */
 };
@@ -372,6 +426,10 @@ enum reg_class
   "GR_REGS",								\
   "FP_REGS",								\
   "FRAME_REGS",								\
+  "LC_REGS",                                                            \
+  "LE_REGS",                                                            \
+  "LS_REGS",                                                            \
+  "VIT_REGS",       							\
   "ALL_REGS"								\
 }
 
@@ -394,7 +452,11 @@ enum reg_class
   { 0xffffffff, 0x00000000, 0x00000000 },	/* GR_REGS */		\
   { 0x00000000, 0xffffffff, 0x00000000 },	/* FP_REGS */		\
   { 0x00000000, 0x00000000, 0x00000003 },	/* FRAME_REGS */	\
-  { 0xffffffff, 0xffffffff, 0x00000003 }	/* ALL_REGS */		\
+  { 0x00000000, 0x00000000, 0x0000000c },       /* LC_REGS */           \
+  { 0x00000000, 0x00000000, 0x00000030 },       /* LE_REGS */           \
+  { 0x00000000, 0x00000000, 0x000000c0 },       /* LS_REGS */           \
+  { 0x00000000, 0x00000000, 0x00000100 },       /* VIT_REGS */          \
+  { 0xffffffff, 0xffffffff, 0x000001ff }	/* ALL_REGS */		\
 }
 
 /* A C expression whose value is a register class containing hard
@@ -436,7 +498,7 @@ enum reg_class
   40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59,			\
   /* None of the remaining classes have defined call-saved		\
      registers.  */							\
-  64, 65								\
+  64, 65, 66, 67, 68, 69, 70, 71, 72                                    \
 }
 
 /* True if VALUE is a signed 12-bit number.  */
@@ -449,6 +511,11 @@ enum reg_class
 #define LUI_OPERAND(VALUE)						\
   (((VALUE) | ((1UL<<31) - IMM_REACH)) == ((1UL<<31) - IMM_REACH)	\
    || ((VALUE) | ((1UL<<31) - IMM_REACH)) + IMM_REACH == 0)
+
+#define SECONDARY_INPUT_RELOAD_CLASS(CLASS, MODE, X)                    \
+  riscv_secondary_reload_class (CLASS, MODE, X, true)
+#define SECONDARY_OUTPUT_RELOAD_CLASS(CLASS, MODE, X)                   \
+  riscv_secondary_reload_class (CLASS, MODE, X, false)
 
 /* Stack layout; function entry, exit and calling.  */
 
@@ -536,7 +603,7 @@ typedef struct {
 #define INIT_CUMULATIVE_ARGS(CUM, FNTYPE, LIBNAME, INDIRECT, N_NAMED_ARGS) \
   memset (&(CUM), 0, sizeof (CUM))
 
-#define EPILOGUE_USES(REGNO)	((REGNO) == RETURN_ADDR_REGNUM)
+#define EPILOGUE_USES(REGNO) riscv_epilogue_uses(REGNO)
 
 /* Align based on stack boundary, which might have been set by the user.  */
 #define RISCV_STACK_ALIGN(LOC) \
@@ -558,6 +625,13 @@ typedef struct {
    ? TRAMPOLINE_CODE_SIZE	\
    : (TRAMPOLINE_CODE_SIZE + POINTER_SIZE * 2))
 #define TRAMPOLINE_ALIGNMENT POINTER_SIZE
+
+/* Pulp support for post modified read/write */
+
+#define HAVE_POST_INCREMENT ((Pulp_Cpu>=PULP_V0) && !TARGET_MASK_NOPOSTMOD)
+#define HAVE_POST_DECREMENT ((Pulp_Cpu>=PULP_V0) && !TARGET_MASK_NOPOSTMOD)
+#define HAVE_POST_MODIFY_DISP ((Pulp_Cpu>=PULP_V0) && !TARGET_MASK_NOPOSTMOD)
+#define HAVE_POST_MODIFY_REG ((Pulp_Cpu>=PULP_V0) && !TARGET_MASK_NOPOSTMOD)
 
 /* Addressing modes, and classification of registers for them.  */
 
@@ -605,6 +679,30 @@ typedef struct {
     else								\
       asm_fprintf ((FILE), "%U%s", (NAME));				\
   } while (0)
+
+/* Output function table and update export list */
+
+#define ASM_OUTPUT_FUNCTION_LABEL(FILE, NAME, DECL)     \
+  do {                                                  \
+        riscv_output_external((FILE), (DECL), (NAME));  \
+        ASM_OUTPUT_LABEL ((FILE), (NAME));              \
+  } while (0)
+
+/* Set by ASM_OUTPUT_SYMBOL_REF when a symbol_ref is output.  */
+#define SYMBOL_FLAG_REFERENCED (1 << SYMBOL_FLAG_MACH_DEP_SHIFT)
+#define SYMBOL_REF_REFERENCED_P(RTX) \
+  ((SYMBOL_REF_FLAGS (RTX) & SYMBOL_FLAG_REFERENCED) != 0)
+
+#define ASM_OUTPUT_SYMBOL_REF(FILE,X) \
+  do {                                                 \
+    SYMBOL_REF_FLAGS (X) |= SYMBOL_FLAG_REFERENCED;    \
+    assemble_name (FILE, XSTR (X, 0));                 \
+  } while (0)
+
+/* This flag marks functions that cannot be lazily bound.  */
+#define SYMBOL_FLAG_BIND_NOW (SYMBOL_FLAG_MACH_DEP << 1)
+#define SYMBOL_REF_BIND_NOW_P(RTX) \
+  ((SYMBOL_REF_FLAGS (RTX) & SYMBOL_FLAG_BIND_NOW) != 0)
 
 #define JUMP_TABLES_IN_TEXT_SECTION 0
 #define CASE_VECTOR_MODE SImode
@@ -684,7 +782,7 @@ typedef struct {
   "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",	\
   "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7",	\
   "fs8", "fs9", "fs10","fs11","ft8", "ft9", "ft10","ft11",	\
-  "arg", "frame", }
+  "arg", "frame","lc0","lc1", "le0", "le1", "ls0", "ls1", "vit"}
 
 #define ADDITIONAL_REGISTER_NAMES					\
 {									\
@@ -752,6 +850,13 @@ typedef struct {
   { "f29",	29 + FP_REG_FIRST },					\
   { "f30",	30 + FP_REG_FIRST },					\
   { "f31",	31 + FP_REG_FIRST },					\
+  { "lc_0",     0  + HWLOOP_REG_FIRST },                                \
+  { "lc_1",     1  + HWLOOP_REG_FIRST },                                \
+  { "le_0",     2  + HWLOOP_REG_FIRST },                                \
+  { "le_1",     3  + HWLOOP_REG_FIRST },                                \
+  { "ls_0",     4  + HWLOOP_REG_FIRST },                                \
+  { "ls_1",     5  + HWLOOP_REG_FIRST },                                \
+  { "vitf",     6  + HWLOOP_REG_FIRST },                                \
 }
 
 /* Globalizing directive for a label.  */
@@ -776,6 +881,10 @@ typedef struct {
 #define ASM_OUTPUT_ADDR_DIFF_ELT(STREAM, BODY, VALUE, REL)		\
   fprintf (STREAM, "\t.word\t%sL%d-%sL%d\n",				\
 	   LOCAL_LABEL_PREFIX, VALUE, LOCAL_LABEL_PREFIX, REL)
+
+#undef ASM_OUTPUT_EXTERNAL
+#define ASM_OUTPUT_EXTERNAL(STREAM,DECL,NAME) \
+  riscv_output_external(STREAM,DECL,NAME)
 
 /* This is how to output an assembler line
    that says to advance the location counter

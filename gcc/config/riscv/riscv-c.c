@@ -35,6 +35,9 @@ void
 riscv_cpu_cpp_builtins (cpp_reader *pfile)
 {
   builtin_define ("__riscv");
+  builtin_define ("__riscv__");
+  builtin_define ("__riscv");
+  builtin_define ("_riscv");
   
   if (TARGET_RVC)
     builtin_define ("__riscv_compressed");
@@ -90,5 +93,11 @@ riscv_cpu_cpp_builtins (cpp_reader *pfile)
     case CM_PIC:
       builtin_define ("__riscv_cmodel_pic");
       break;
+    }
+  if (Pulp_Cpu>=PULP_V0)
+    {
+      builtin_define ("__pulp__");
+      builtin_define ("__pulp");
+      builtin_define ("_pulp");
     }
 }

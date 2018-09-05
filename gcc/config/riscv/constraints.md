@@ -3,6 +3,10 @@
 ;; Contributed by Andrew Waterman (andrew@sifive.com).
 ;; Based on MIPS target for GNU compiler.
 ;;
+;; PULP family support contributed by Eric Flamand (eflamand@iis.ee.ethz.ch) at ETH-Zurich
+;; and Greenwaves Technologies (eric.flamand@greenwaves-technologies.com)
+;;
+;;
 ;; This file is part of GCC.
 ;;
 ;; GCC is free software; you can redistribute it and/or modify
@@ -21,8 +25,26 @@
 
 ;; Register constraints
 
+;;
+(define_register_constraint "a" "(Pulp_Cpu==PULP_V0) ? GR_REGS : NO_REGS"
+  "gp reg if pulpv1, empty otherwise")
+
+;; HW Loop register constraints, loop end
+(define_register_constraint "t" "LE_REGS"
+  "LE0 or LE1.")
+
+;; HW Loop register constraints, loop start
+(define_register_constraint "u" "LS_REGS"
+  "LS0 or LS1.")
+
+;; HW Loop register constraints, loop counter
+(define_register_constraint "k" "LC_REGS"
+  "LC0 or LC1.")
+
 (define_register_constraint "f" "TARGET_HARD_FLOAT ? FP_REGS : NO_REGS"
   "A floating-point register (if available).")
+
+;; (define_register_constraint "b" "ALL_REGS" "@internal") DO WE NEED IT ????
 
 (define_register_constraint "j" "SIBCALL_REGS"
   "@internal")
@@ -33,6 +55,12 @@
   "@internal")
 
 ;; General constraints
+
+
+(define_constraint "Z"
+  "@internal"
+  (and (match_code "const_int")
+       (match_test "1")))
 
 (define_constraint "I"
   "An I-type 12-bit signed immediate."
@@ -48,6 +76,11 @@
   "A 5-bit unsigned immediate for CSR access instructions."
   (and (match_code "const_int")
        (match_test "IN_RANGE (ival, 0, 31)")))
+
+(define_constraint "L"
+ "A 12-bit unsigned immediate."
+  (and (match_code "const_int")
+       (and (match_test "ival>=0") (match_test "ival<=4095"))))
 
 ;; Floating-point constant +0.0, used for FCVT-based moves when FMV is
 ;; not available in RV32.
@@ -76,3 +109,41 @@
    A constant @code{move_operand}."
   (and (match_operand 0 "move_operand")
        (match_test "CONSTANT_P (op)")))
+
+(define_memory_constraint "YU"
+  "A valid tiny memory operand"
+  (and (match_code "mem")
+       (match_test "tiny_memory_operand (op, VOIDmode)")))
+
+(define_memory_constraint "W"
+  "@internal
+   A memory address based on a member of @code{BASE_REG_CLASS}."
+  (and (match_code "mem")
+       (match_operand 0 "memory_operand")))
+
+(define_constraint "YG"
+  "@internal
+   A vector zero."
+  (and (match_code "const_vector")
+       (match_test "op == CONST0_RTX (mode)")))
+
+(define_constraint "YM"
+  "@internal"
+  (and (match_code "const_int")
+       (ior (match_test "(INTVAL(op) == 0)")
+	    (match_test "((Pulp_Cpu>=PULP_V2) && (INTVAL(op)>=-16) && (INTVAL(op)<=15))")
+       )
+  )
+)
+
+(define_constraint "vIsdc"
+  "A constant vector with identical elements in [-32..31]"
+   (and (match_code "const_vector")
+        (match_test "riscv_replicated_const_vector(op, -32, 31)")))
+
+(define_constraint "vIusc"
+  "A constant vector with identical elements in [0..63]"
+   (and (match_code "const_vector")
+        (match_test "riscv_replicated_const_vector(op, 0, 63)")))
+
+
